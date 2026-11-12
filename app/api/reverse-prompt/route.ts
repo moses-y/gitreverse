@@ -3,22 +3,32 @@ import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 import { getFileTree, getReadme, getRepoMeta } from "@/lib/github-client";
 import { formatAsFilteredTree } from "@/lib/file-tree-formatter";
 import { parseGitHubRepoInput } from "@/lib/parse-github-repo";
-import { getSupabase } from "@/lib/supabase";
+import { getSupabase, getSupabaseAdmin } from "@/lib/supabase";
+import {
+  buildAzureChatCompletionsBody,
+  buildAzureOpenAiUrl,
+  getAzureOpenAiApiKey,
+  getAzureOpenAiBaseUrl,
+  getAzureQuickModel,
+  getAzureQuickReasoningEffort,
+  type AzureOpenAiReasoningEffort,
+} from "@/lib/azure-openai";
 
 const README_MAX_CHARS = 8000;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const XAI_URL = "https://api.x.ai/v1/chat/completions";
-const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const GOOGLE_AI_STUDIO_URL =
   "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const APISMART_URL = "https://gw.apismart.ai/v1/chat/completions";
 
-type LlmProvider = "openrouter" | "grok" | "openai" | "google";
+type LlmProvider = "openrouter" | "grok" | "azure" | "google" | "apismart";
 
 type LlmTarget = {
   provider: LlmProvider;
   url: string;
   apiKey: string;
   model: string;
+  reasoningEffort?: AzureOpenAiReasoningEffort;
 };
 
 function providerDisplayName(p: LlmProvider): string {
@@ -27,10 +37,12 @@ function providerDisplayName(p: LlmProvider): string {
       return "OpenRouter";
     case "grok":
       return "xAI Grok";
-    case "openai":
-      return "OpenAI";
+    case "azure":
+      return "Azure OpenAI";
     case "google":
       return "Google AI Studio";
+    case "apismart":
+      return "ApiSmart";
     default: {
       const _exhaustive: never = p;
       return _exhaustive;
@@ -56,12 +68,29 @@ function openRouterTargetFromApiKey(apiKey: string): LlmTarget {
   };
 }
 
-function openAiTargetFromApiKey(apiKey: string): LlmTarget {
+function azureTargetFromEnv(): LlmTarget | { error: string } {
+  const apiKey = getAzureOpenAiApiKey();
+  if (!apiKey) {
+    return {
+      error:
+        "GITREVERSE_QUICK_LLM=azure requires AZURE_OPENAI_API_KEY in .env.local.",
+    };
+  }
+
+  const baseUrl = getAzureOpenAiBaseUrl();
+  if (!baseUrl) {
+    return {
+      error:
+        "GITREVERSE_QUICK_LLM=azure requires AZURE_OPENAI_BASE_URL in .env.local.",
+    };
+  }
+
   return {
-    provider: "openai",
-    url: OPENAI_URL,
+    provider: "azure",
+    url: buildAzureOpenAiUrl("chat/completions"),
     apiKey,
-    model: process.env.OPENAI_MODEL?.trim() || "gpt-4.1",
+    model: getAzureQuickModel(),
+    reasoningEffort: getAzureQuickReasoningEffort(),
   };
 }
 
@@ -74,20 +103,32 @@ function googleTargetFromApiKey(apiKey: string): LlmTarget {
   };
 }
 
+function apismartTargetFromApiKey(apiKey: string): LlmTarget {
+  return {
+    provider: "apismart",
+    url: APISMART_URL,
+    apiKey,
+    model: process.env.APISMART_MODEL?.trim() || "DEEPSEEK_V4_FLASH",
+  };
+}
+
 /** When unset or `auto`, first configured key wins in this order. */
 function resolveLlmTargetAuto(
   xaiKey: string | undefined,
   openRouterKey: string | undefined,
-  openAiKey: string | undefined,
-  googleKey: string | undefined
+  azureKey: string | undefined,
+  azureBaseUrl: string | undefined,
+  googleKey: string | undefined,
+  apismartKey: string | undefined
 ): LlmTarget | { error: string } {
   if (xaiKey) return grokTargetFromApiKey(xaiKey);
   if (openRouterKey) return openRouterTargetFromApiKey(openRouterKey);
-  if (openAiKey) return openAiTargetFromApiKey(openAiKey);
+  if (azureKey && azureBaseUrl) return azureTargetFromEnv();
   if (googleKey) return googleTargetFromApiKey(googleKey);
+  if (apismartKey) return apismartTargetFromApiKey(apismartKey);
   return {
     error:
-      "No LLM API key configured. Set GITREVERSE_QUICK_LLM and the matching key(s), or leave GITREVERSE_QUICK_LLM unset (auto) and set one of: XAI_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY.",
+      "No LLM API key configured. Set GITREVERSE_QUICK_LLM and the matching key(s), or leave GITREVERSE_QUICK_LLM unset (auto) and set one of: XAI_API_KEY, OPENROUTER_API_KEY, AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL, GOOGLE_GENERATIVE_AI_API_KEY, APISMART_API_KEY.",
   };
 }
 
@@ -97,18 +138,27 @@ function resolveLlmTarget(): LlmTarget | { error: string } {
 
   const xaiKey = process.env.XAI_API_KEY?.trim();
   const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
-  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const azureKey = getAzureOpenAiApiKey() ?? undefined;
+  const azureBaseUrl = getAzureOpenAiBaseUrl() ?? undefined;
   const googleKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
+  const apismartKey = process.env.APISMART_API_KEY?.trim();
 
   if (mode === "auto") {
-    return resolveLlmTargetAuto(xaiKey, openRouterKey, openAiKey, googleKey);
+    return resolveLlmTargetAuto(
+      xaiKey,
+      openRouterKey,
+      azureKey,
+      azureBaseUrl,
+      googleKey,
+      apismartKey
+    );
   }
 
-  const valid = new Set(["grok", "openrouter", "openai", "google"]);
+  const valid = new Set(["grok", "openrouter", "azure", "google", "apismart"]);
   if (!valid.has(mode)) {
     return {
       error:
-        "Invalid GITREVERSE_QUICK_LLM. Use grok, openrouter, openai, google, or auto.",
+        "Invalid GITREVERSE_QUICK_LLM. Use grok, openrouter, azure, google, apismart, or auto.",
     };
   }
 
@@ -131,14 +181,8 @@ function resolveLlmTarget(): LlmTarget | { error: string } {
         };
       }
       return openRouterTargetFromApiKey(openRouterKey);
-    case "openai":
-      if (!openAiKey) {
-        return {
-          error:
-            "GITREVERSE_QUICK_LLM=openai requires OPENAI_API_KEY in .env.local.",
-        };
-      }
-      return openAiTargetFromApiKey(openAiKey);
+    case "azure":
+      return azureTargetFromEnv();
     case "google":
       if (!googleKey) {
         return {
@@ -147,6 +191,14 @@ function resolveLlmTarget(): LlmTarget | { error: string } {
         };
       }
       return googleTargetFromApiKey(googleKey);
+    case "apismart":
+      if (!apismartKey) {
+        return {
+          error:
+            "GITREVERSE_QUICK_LLM=apismart requires APISMART_API_KEY in .env.local.",
+        };
+      }
+      return apismartTargetFromApiKey(apismartKey);
   }
 }
 
@@ -366,16 +418,27 @@ export async function POST(request: NextRequest) {
 
     let res: Response;
     try {
+      const messages = [
+        { role: "system" as const, content: SYSTEM_PROMPT },
+        { role: "user" as const, content: userContent },
+      ];
+      const requestBody =
+        llm.provider === "azure"
+          ? buildAzureChatCompletionsBody({
+              model: llm.model,
+              messages,
+              reasoningEffort: llm.reasoningEffort,
+              maxCompletionTokens: 4096,
+            })
+          : {
+              model: llm.model,
+              messages,
+            };
+
       res = await fetch(llm.url, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          model: llm.model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userContent },
-          ],
-        }),
+        body: JSON.stringify(requestBody),
       });
     } catch (e) {
       const label = providerDisplayName(llm.provider);
@@ -426,9 +489,11 @@ export async function POST(request: NextRequest) {
           ? "OpenRouter authentication failed. Check OPENROUTER_API_KEY in .env.local."
           : llm.provider === "grok"
             ? "xAI Grok authentication failed. Check XAI_API_KEY in .env.local."
-            : llm.provider === "openai"
-              ? "OpenAI authentication failed. Check OPENAI_API_KEY in .env.local."
-              : "Google AI Studio authentication failed. Check GOOGLE_GENERATIVE_AI_API_KEY in .env.local.";
+            : llm.provider === "azure"
+              ? "Azure OpenAI authentication failed. Check AZURE_OPENAI_API_KEY and AZURE_OPENAI_BASE_URL in .env.local."
+              : llm.provider === "apismart"
+                ? "ApiSmart authentication failed. Check APISMART_API_KEY in .env.local."
+                : "Google AI Studio authentication failed. Check GOOGLE_GENERATIVE_AI_API_KEY in .env.local.";
       return NextResponse.json(
         {
           error: isAuth ? authHint : `Generation failed: ${msg}`,
@@ -447,7 +512,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sb = getSupabase();
+    const sb = getSupabaseAdmin();
     if (sb) {
       void sb
         .from("prompt_cache")
@@ -460,11 +525,34 @@ export async function POST(request: NextRequest) {
           },
           { onConflict: "owner,repo" }
         )
-        .then(({ error: upsertError }) => {
+        .then(async ({ error: upsertError }) => {
           if (upsertError) {
             console.error(
               "[reverse-prompt] cache upsert:",
               upsertError.message
+            );
+            return;
+          }
+
+          try {
+            const { updatePromptEmbedding } = await import(
+              "@/lib/prompt-cache-embedding"
+            );
+            await updatePromptEmbedding(sb, { owner, repo, prompt });
+          } catch (embedError) {
+            console.error(
+              "[reverse-prompt] cache embedding:",
+              embedError instanceof Error ? embedError.message : embedError
+            );
+          }
+
+          try {
+            const { updatePromptTitle } = await import("@/lib/prompt-cache-title");
+            await updatePromptTitle(sb, { owner, repo, prompt });
+          } catch (titleError) {
+            console.error(
+              "[reverse-prompt] cache title:",
+              titleError instanceof Error ? titleError.message : titleError
             );
           }
         });

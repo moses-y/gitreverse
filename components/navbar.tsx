@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { getPlanLabel, type BillingPlan } from "@/lib/billing-config";
 import { useAuth } from "@/contexts/AuthContext";
 import { AUTH_SKIP, isSupabaseAuthConfigured } from "@/lib/supabase-auth";
+import { fetchBillingStatus } from "@/lib/subscription-status-client";
+import { useAppHref } from "@/lib/use-app-href";
 import type { User } from "@supabase/supabase-js";
 
 function IconBooks({ className }: { className?: string }) {
@@ -108,7 +111,7 @@ function IconLogOut({ size = 15 }: { size?: number }) {
   );
 }
 
-const SUBSCRIBER_EMAIL_KEY = "gr_subscriber_email";
+const CANCEL_REASON_MIN_LEN = 10;
 
 function userDisplayName(user: User): string {
   const meta = user.user_metadata as Record<string, unknown> | undefined;
@@ -147,43 +150,29 @@ function userInitials(user: User): string {
 
 export type NavbarProps = {
   isSubscriber?: boolean;
+  creditBalance?: number;
 };
 
 function NavDivider() {
   return (
-    <div className="mx-1 h-6 w-px shrink-0 bg-zinc-200" aria-hidden />
+    <div
+      className="mx-1 hidden h-6 w-px shrink-0 bg-zinc-200 sm:block"
+      aria-hidden
+    />
   );
 }
 
-function IconLinkWithTooltip({
-  href,
-  label,
-  children,
-  isActive,
-}: {
-  href: string;
-  label: string;
-  children: React.ReactNode;
-  isActive?: boolean;
-}) {
-  const [showTip, setShowTip] = useState(false);
+function LibraryNavLink({ isActive, href }: { isActive: boolean; href: string }) {
   const [hov, setHov] = useState(false);
   const shadowShift = hov ? "translate(2px,2px)" : "translate(3px,3px)";
   const btnShift = hov ? "-translate-x-px -translate-y-px" : "";
+  const buttonClass = `relative inline-flex items-center gap-1.5 rounded-md border-[2.5px] border-zinc-900 bg-[#fff4da] px-2 py-1.5 text-sm font-bold text-zinc-900 transition-transform duration-100 sm:px-3.5 ${btnShift} ${isActive ? "ring-2 ring-zinc-400" : ""}`;
 
   return (
-    <div
-      className="group relative inline-flex"
-      onMouseEnter={() => {
-        setHov(true);
-        setShowTip(true);
-      }}
-      onMouseLeave={() => {
-        setHov(false);
-        setShowTip(false);
-      }}
-      onFocus={() => setShowTip(true)}
-      onBlur={() => setShowTip(false)}
+    <span
+      className="relative isolate inline-flex"
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
     >
       <span
         className="pointer-events-none absolute inset-0 rounded-md bg-zinc-900 transition-transform duration-100"
@@ -192,93 +181,138 @@ function IconLinkWithTooltip({
       />
       <Link
         href={href}
-        aria-label={label}
         aria-current={isActive ? "page" : undefined}
-        className={`relative flex h-9 w-9 items-center justify-center rounded-md border-[2.5px] border-zinc-900 bg-[#fff4da] text-zinc-900 transition-transform duration-100 ${btnShift} ${isActive ? "ring-2 ring-zinc-400" : ""}`}
+        className={buttonClass}
       >
-        {children}
-      </Link>
-      {showTip ? (
-        <div
-          className="pointer-events-none absolute left-1/2 top-full z-[100] mt-2 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white"
-          role="tooltip"
-        >
-          {label}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function PremiumButton({ isSubscriber }: { isSubscriber: boolean }) {
-  const [hov, setHov] = useState(false);
-  const shadowShift = hov ? "translate(2px,2px)" : "translate(3px,3px)";
-  const btnShift = hov ? "-translate-x-px -translate-y-px" : "";
-
-  if (isSubscriber) {
-    return (
-      <span className="relative isolate inline-flex">
-        <span
-          className="pointer-events-none absolute inset-0 rounded-md bg-zinc-900"
-          style={{ transform: shadowShift }}
-          aria-hidden
-        />
-        <span
-          className={`relative inline-flex items-center gap-1.5 rounded-md border-[2.5px] border-zinc-900 bg-[#fff4da] px-3.5 py-1.5 text-sm font-bold text-zinc-900`}
-        >
-          <IconPremiumBadge size={17} />
-          Premium
-        </span>
-      </span>
-    );
-  }
-
-  return (
-    <span className="relative isolate inline-flex">
-      <span
-        className="pointer-events-none absolute inset-0 rounded-md bg-zinc-900 transition-transform duration-100"
-        style={{ transform: shadowShift }}
-        aria-hidden
-      />
-      <Link
-        href="/premium"
-        onMouseEnter={() => setHov(true)}
-        onMouseLeave={() => setHov(false)}
-        className={`relative inline-flex cursor-pointer items-center gap-1.5 rounded-md border-[2.5px] border-zinc-900 bg-[#fff4da] px-3.5 py-1.5 text-sm font-bold text-zinc-900 transition-transform duration-100 ${btnShift}`}
-      >
-        <IconPremiumBadge size={17} />
-        Premium
+        <IconBooks />
+        <span>Library</span>
       </Link>
     </span>
   );
 }
 
-export function Navbar({ isSubscriber: isSubscriberProp }: NavbarProps) {
+export function Navbar({ isSubscriber: isSubscriberProp, creditBalance: creditBalanceProp }: NavbarProps) {
   const pathname = usePathname();
-  const { user, isLoading: authLoading, signInWithGitHub, signOut } = useAuth();
+  const homeHref = useAppHref("/");
+  const libraryHref = useAppHref("/library");
+  const historyHref = useAppHref("/history");
+  const {
+    user,
+    session,
+    isLoading: authLoading,
+    signInWithGitHub,
+    signOut,
+  } = useAuth();
   const authUiEnabled =
     Boolean(!AUTH_SKIP && isSupabaseAuthConfigured());
 
-  const [subscriberFromStorage, setSubscriberFromStorage] = useState(false);
+  const [planFromApi, setPlanFromApi] = useState<BillingPlan>("free");
+  const [creditBalanceFromApi, setCreditBalanceFromApi] = useState(0);
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const read = () => {
-      try {
-        const v = localStorage.getItem(SUBSCRIBER_EMAIL_KEY);
-        setSubscriberFromStorage(Boolean(v?.trim()));
-      } catch {
-        setSubscriberFromStorage(false);
-      }
-    };
-    read();
-    window.addEventListener("storage", read);
-    return () => window.removeEventListener("storage", read);
-  }, []);
+    const token = session?.access_token;
+    if (!token) {
+      setPlanFromApi("free");
+      setCreditBalanceFromApi(0);
+      return;
+    }
 
-  const isSubscriber = Boolean(isSubscriberProp) || subscriberFromStorage;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await fetchBillingStatus(token);
+        if (!cancelled) {
+          setPlanFromApi(status.plan);
+          setCreditBalanceFromApi(status.credits.balance);
+        }
+      } catch {
+        if (!cancelled) {
+          setPlanFromApi("free");
+          setCreditBalanceFromApi(0);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.access_token]);
+
+  const isSubscriber = Boolean(isSubscriberProp) || planFromApi !== "free";
+  const creditBalance = creditBalanceProp ?? creditBalanceFromApi;
+  const planLabel =
+    isSubscriber && isSubscriberProp ? "Premium" : getPlanLabel(planFromApi);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelSuccess, setCancelSuccess] = useState(false);
+
+  const closeCancelModal = useCallback(() => {
+    setCancelOpen(false);
+    setCancelReason("");
+    setCancelError(null);
+    setCancelLoading(false);
+    setCancelSuccess(false);
+  }, []);
+
+  const handleConfirmCancelSubscription = useCallback(async () => {
+    const reason = cancelReason.trim();
+    if (reason.length < CANCEL_REASON_MIN_LEN) {
+      setCancelError(
+        `Please share a bit more detail (at least ${CANCEL_REASON_MIN_LEN} characters).`
+      );
+      return;
+    }
+
+    const token = session?.access_token;
+    if (!token) {
+      setCancelError("Something went wrong. Try signing out and back in.");
+      return;
+    }
+
+    setCancelLoading(true);
+    setCancelError(null);
+
+    try {
+      const res = await fetch("/api/cancel-subscription", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ cancellation_reason: reason }),
+      });
+
+      const data: unknown = await res.json().catch(() => ({}));
+      const errMsg = ((): string | null => {
+        if (typeof data !== "object" || data === null) return null;
+        const o = data as Record<string, unknown>;
+        if (typeof o.error === "string" && o.error.trim()) return o.error;
+        if (typeof o.message === "string" && o.message.trim()) return o.message;
+        return null;
+      })();
+
+      if (!res.ok) {
+        setCancelError(errMsg || "Could not cancel subscription.");
+        setCancelLoading(false);
+        return;
+      }
+
+      setPlanFromApi("free");
+      setCancelSuccess(true);
+      setCancelLoading(false);
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 1200);
+    } catch {
+      setCancelError("Network error. Please try again.");
+      setCancelLoading(false);
+    }
+  }, [cancelReason, session?.access_token]);
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -291,6 +325,15 @@ export function Navbar({ isSubscriber: isSubscriberProp }: NavbarProps) {
       return () => document.removeEventListener("mousedown", onDoc);
     }
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!cancelOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") closeCancelModal();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [cancelOpen, closeCancelModal]);
 
   const busySignInRef = useRef(false);
   const handleSignIn = useCallback(async () => {
@@ -306,40 +349,24 @@ export function Navbar({ isSubscriber: isSubscriberProp }: NavbarProps) {
   }, [signInWithGitHub]);
 
   const menuId = useId();
+  const cancelDialogTitleId = useId();
+  const cancelDialogDescId = useId();
 
   return (
-    <nav className="sticky top-0 z-50 border-b-[3px] border-zinc-900 bg-[#FFFDF8]">
-      <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-3 px-4 sm:px-6">
+    <>
+      <nav className="sticky top-0 z-50 border-b-[3px] border-zinc-900 bg-[#FFFDF8]">
+      <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-1.5 px-3 sm:gap-3 sm:px-6">
         <Link
-          href="/"
-          className="shrink-0 text-xl font-bold tracking-tight transition-transform hover:-translate-y-0.5"
+          href={homeHref}
+          className="shrink-0 text-lg font-bold tracking-tight transition-transform hover:-translate-y-0.5 sm:text-xl"
           aria-label="GitReverse home"
         >
           <span className="text-zinc-900">Git</span>
           <span className="text-[#d31611]">Reverse</span>
         </Link>
 
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:gap-2">
-          <IconLinkWithTooltip
-            href="/library"
-            label="Library"
-            isActive={pathname === "/library"}
-          >
-            <IconBooks />
-          </IconLinkWithTooltip>
-          <IconLinkWithTooltip
-            href="/history"
-            label="History"
-            isActive={pathname === "/history"}
-          >
-            <IconClock />
-          </IconLinkWithTooltip>
-
-          <NavDivider />
-
-          <div className="shrink-0">
-            <PremiumButton isSubscriber={isSubscriber} />
-          </div>
+        <div className="flex shrink-0 flex-nowrap items-center justify-end gap-1.5 sm:gap-2">
+          <LibraryNavLink isActive={pathname === "/library"} href={libraryHref} />
 
           <NavDivider />
 
@@ -388,10 +415,41 @@ export function Navbar({ isSubscriber: isSubscriberProp }: NavbarProps) {
                         {isSubscriber ? (
                           <span className="mt-2 inline-flex items-center gap-1 rounded border-[1.5px] border-zinc-900 bg-[#fff4da] px-2 py-0.5 text-[11px] font-bold text-zinc-900">
                             <IconPremiumBadge size={12} />
-                            Premium
+                            {planLabel}
+                          </span>
+                        ) : null}
+                        {creditBalance > 0 ? (
+                          <span className="mt-2 inline-flex items-center rounded border-[1.5px] border-zinc-900 bg-white px-2 py-0.5 text-[11px] font-bold text-zinc-900">
+                            {creditBalance} credit{creditBalance === 1 ? "" : "s"}
                           </span>
                         ) : null}
                       </div>
+                      <Link
+                        href={historyHref}
+                        role="menuitem"
+                        className="flex w-full items-center gap-2.5 border-b-2 border-zinc-200 px-4 py-3 text-left text-sm font-semibold text-zinc-900 hover:bg-zinc-50"
+                        onClick={() => setMenuOpen(false)}
+                      >
+                        <IconClock />
+                        History
+                      </Link>
+                      {isSubscriber ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex w-full items-center gap-2.5 border-b-2 border-zinc-200 px-4 py-3 text-left text-sm font-semibold text-zinc-900 hover:bg-zinc-50"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            setCancelOpen(true);
+                            setCancelReason("");
+                            setCancelError(null);
+                            setCancelSuccess(false);
+                          }}
+                        >
+                          <IconPremiumBadge size={15} />
+                          Subscription
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         role="menuitem"
@@ -412,7 +470,7 @@ export function Navbar({ isSubscriber: isSubscriberProp }: NavbarProps) {
               <button
                 type="button"
                 onClick={() => void handleSignIn()}
-                className="shrink-0 rounded-md border-[2.5px] border-zinc-900 bg-white px-3 py-1.5 text-sm font-bold text-zinc-900 hover:bg-zinc-50"
+                className="shrink-0 rounded-md border-[2.5px] border-zinc-900 bg-white px-2.5 py-1.5 text-xs font-bold text-zinc-900 hover:bg-zinc-50 sm:px-3 sm:text-sm"
               >
                 Sign in
               </button>
@@ -426,5 +484,108 @@ export function Navbar({ isSubscriber: isSubscriberProp }: NavbarProps) {
         </div>
       </div>
     </nav>
+    {cancelOpen ? (
+      <div
+        className="fixed inset-0 z-[300] flex items-center justify-center bg-zinc-900/40 px-4 py-8"
+        role="presentation"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget && !cancelLoading && !cancelSuccess)
+            closeCancelModal();
+        }}
+      >
+        <div
+          className="relative max-h-[min(90vh,520px)] w-full max-w-md overflow-hidden rounded-[10px] border-[3px] border-zinc-900 bg-[#FFFDF8]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={cancelDialogTitleId}
+          aria-describedby={cancelDialogDescId}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div
+            className="pointer-events-none absolute inset-0 rounded-[10px] bg-zinc-900"
+            style={{ transform: "translate(5px,5px)" }}
+            aria-hidden
+          />
+          <div className="relative max-h-[inherit] overflow-y-auto rounded-[10px] bg-[#FFFDF8]">
+            <div className="border-b-2 border-zinc-200 bg-[#fff4da] px-4 py-3.5">
+              <h2
+                id={cancelDialogTitleId}
+                className="text-sm font-extrabold tracking-tight text-zinc-900"
+              >
+                Cancel subscription
+              </h2>
+              <p
+                id={cancelDialogDescId}
+                className="mt-1 text-xs leading-relaxed text-zinc-500"
+              >
+                Tell us why you&apos;re leaving — your feedback helps us improve.
+              </p>
+            </div>
+
+            <div className="p-4">
+              {cancelSuccess ? (
+                <p className="text-sm font-semibold text-zinc-900">
+                  Subscription cancelled. Refreshing…
+                </p>
+              ) : (
+                <>
+                  <label
+                    htmlFor="cancel-reason"
+                    className="mb-1.5 block text-xs font-bold text-zinc-700"
+                  >
+                    Cancellation reason
+                  </label>
+                  <textarea
+                    id="cancel-reason"
+                    value={cancelReason}
+                    onChange={(e) => {
+                      setCancelReason(e.target.value);
+                      if (cancelError) setCancelError(null);
+                    }}
+                    disabled={cancelLoading}
+                    rows={4}
+                    className="block w-full resize-y rounded-md border-[2.5px] border-zinc-900 bg-white px-3 py-2 text-sm text-zinc-900 shadow-none outline-none ring-0 placeholder:text-zinc-400 focus-visible:ring-2 focus-visible:ring-zinc-400 disabled:opacity-60"
+                    placeholder="e.g. Not using it enough, switching tools, too expensive…"
+                  />
+                  <p className="mt-1.5 text-[11px] text-zinc-500">
+                    At least {CANCEL_REASON_MIN_LEN} characters required.
+                  </p>
+                  {cancelError ? (
+                    <p
+                      className="mt-2 text-xs font-semibold text-[#d31611]"
+                      role="alert"
+                    >
+                      {cancelError}
+                    </p>
+                  ) : null}
+                </>
+              )}
+            </div>
+
+            {!cancelSuccess ? (
+              <div className="flex flex-col-reverse gap-2 border-t-2 border-zinc-200 bg-[#fffdf8] p-4 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  className="rounded-md border-[2.5px] border-zinc-900 bg-white px-3 py-2 text-sm font-bold text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
+                  disabled={cancelLoading}
+                  onClick={closeCancelModal}
+                >
+                  Keep my subscription
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border-[2.5px] border-zinc-900 bg-[#d31611] px-3 py-2 text-sm font-bold text-white hover:opacity-95 disabled:opacity-50"
+                  disabled={cancelLoading}
+                  onClick={() => void handleConfirmCancelSubscription()}
+                >
+                  {cancelLoading ? "Cancelling…" : "Cancel subscription"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }

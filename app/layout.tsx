@@ -15,69 +15,31 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GitReverse",
+  metadataBase: new URL("https://gitreverse.com"),
+  title: {
+    default: "GitReverse",
+    template: "%s | GitReverse",
+  },
   description:
-    "Turn a GitHub repository into a plain-language coding agent prompt.",
+    "Reverse engineer any GitHub repository into a plain-language coding agent prompt you can build from.",
+  openGraph: {
+    type: "website",
+    siteName: "GitReverse",
+    title: "GitReverse",
+    description:
+      "Reverse engineer any GitHub repository into a plain-language coding agent prompt you can build from.",
+    url: "https://gitreverse.com",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "GitReverse",
+    description:
+      "Reverse engineer any GitHub repository into a plain-language coding agent prompt you can build from.",
+  },
+  other: {
+    "impact-site-verification": "daff38b7-bd21-4b50-bbbc-bdf3b0e4c564",
+  },
 };
-
-const checkoutNavigationRestoreScript = `
-(function () {
-  var key = "gr_checkout_navigation_state";
-  var reloading = false;
-
-  function getState() {
-    try {
-      return sessionStorage.getItem(key);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function setState(value) {
-    try {
-      sessionStorage.setItem(key, value);
-    } catch (_) {}
-  }
-
-  function clearState() {
-    try {
-      sessionStorage.removeItem(key);
-    } catch (_) {}
-  }
-
-  function maybeReload() {
-    if (reloading) return;
-    var state = getState();
-    if (state !== "started" && state !== "left") return;
-    if (new URLSearchParams(window.location.search).get("session_id")) {
-      clearState();
-      return;
-    }
-    reloading = true;
-    setState("returned");
-    window.location.reload();
-  }
-
-  function markLeft() {
-    if (getState() === "started") {
-      setState("left");
-    }
-  }
-
-  window.addEventListener("pagehide", markLeft);
-  window.addEventListener("pageshow", maybeReload);
-  window.addEventListener("focus", maybeReload);
-  window.addEventListener("popstate", maybeReload);
-  document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "hidden") {
-      markLeft();
-    } else {
-      maybeReload();
-    }
-  });
-  maybeReload();
-})();
-`;
 
 export default function RootLayout({
   children,
@@ -90,9 +52,6 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full bg-[#fffdf8] antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <script
-          dangerouslySetInnerHTML={{ __html: checkoutNavigationRestoreScript }}
-        />
         <AuthProvider>{children}</AuthProvider>
         <Analytics />
       </body>

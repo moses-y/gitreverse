@@ -20,16 +20,32 @@ Copy `.env.example` to `.env.local` and fill in at least one LLM API key.
 
 ### Quick LLM (required)
 
-The quick reverse endpoint supports four providers. Set **`GITREVERSE_QUICK_LLM`** to pin one, or leave it unset (`auto`) to let the app use whichever key it finds first:
+The quick reverse endpoint supports five providers. Set **`GITREVERSE_QUICK_LLM`** to pin one, or leave it unset (`auto`) to let the app use whichever key it finds first:
 
 | Provider | Key env var | Model env var | Default model |
 |---|---|---|---|
 | Grok (xAI) | `XAI_API_KEY` | `XAI_MODEL` | `grok-3` |
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` | `google/gemini-2.5-pro` |
-| OpenAI | `OPENAI_API_KEY` | `OPENAI_MODEL` | `gpt-4.1` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` | `AZURE_OPENAI_MODEL` | `gpt-5.4` |
 | Google AI Studio | `GOOGLE_GENERATIVE_AI_API_KEY` | `GOOGLE_AI_STUDIO_MODEL` | `gemini-2.5-pro` |
+| ApiSmart | `APISMART_API_KEY` | `APISMART_MODEL` | `DEEPSEEK_V4_FLASH` |
 
-In `auto` mode the order of preference is: Grok → OpenRouter → OpenAI → Google.
+In `auto` mode the order of preference is: Grok → OpenRouter → Azure → Google → ApiSmart.
+
+ApiSmart (sponsored) is an [OpenAI-compatible](https://docs.apismart.ai/api-guides/chat-completions-api) gateway. Copy the exact Model ID from the [ApiSmart models](https://www.apismart.ai/models) page (IDs differ from display names). Pin it with `GITREVERSE_QUICK_LLM=apismart`.
+
+Azure quick reverse uses `gpt-5.4` by default with `AZURE_OPENAI_REASONING_EFFORT=medium`. Title generation also uses Azure and defaults to `gpt-5.4-mini` with reasoning disabled.
+
+### Embeddings / library search
+
+Prompt-cache embeddings and `/library` hybrid search now use Azure embeddings first:
+
+- **`AZURE_OPENAI_EMBEDDING_MODEL`** — defaults to `text-embedding-3-small`
+- **`AZURE_OPENAI_EMBEDDING_DIMENSIONS`** — defaults to `512`
+- **`AZURE_OPENAI_EMBEDDING_DEPLOYMENT`** — optional explicit deployment name
+- **`AZURE_OPENAI_DEPLOYMENT_NAME_MAP`** — optional `model=deployment` mapping when deployment names differ from model ids
+
+If your Azure resource does not yet have an embedding deployment, you can temporarily set **`OPENAI_API_KEY`** as an embedding-only fallback while quick reverse and title generation stay on Azure.
 
 ### Other env vars
 
@@ -37,24 +53,14 @@ In `auto` mode the order of preference is: Grok → OpenRouter → OpenAI → Go
 - **`SUPABASE_URL`** + **`SUPABASE_PUBLISHABLE_KEY`** — optional; enables server-side caching of quick prompts in `prompt_cache` and exposes the `/library` page.
 - **`VIEWS_IP_SALT`** — **required in production**. Generate one with `openssl rand -hex 32`. The app will refuse to start in production without a non-default value.
 
-### Custom reverse (optional)
-
-For **deep / focus** prompts, point the app at a backend service:
-
-```
-CUSTOM_REVERSE_SERVICE_URL=http://localhost:3001
-```
-
 ## Routes
 
 | Path | Description |
 |---|---|
-| `/` | Home — quick and custom reverse |
+| `/` | Home — quick reverse (codebase or website) |
 | `/library` | Browse cached quick prompts (requires Supabase) |
-| `/history` | Recent repos from localStorage |
+| `/history` | Your prompt history (profile menu when signed in; syncs to Supabase) |
 | `/[owner]/[repo]` | Shareable quick-reverse link |
-| `/[owner]/[repo]/deep` | Shareable deep-reverse link |
-| `/[owner]/[repo]/[focus]` | Shareable manual-focus link |
 | `/[owner]/[repo]/tree/...` | Redirects to `/[owner]/[repo]` |
 
 ## Development
@@ -70,4 +76,15 @@ Open [http://localhost:3000](http://localhost:3000).
 pnpm build
 pnpm start
 pnpm lint
+pnpm test:library
 ```
+
+`test:library` runs credential-free regression tests for library filtering, source fallbacks, and outage handling.
+
+[Sponsor GitReverse](https://gitreverse.com/sponsor)
+
+## License
+
+GitReverse's source code is licensed under the [MIT License](LICENSE).
+
+Third-party dependencies and assets retain their respective licenses and rights. See the [sponsor asset sources](public/sponsors/SOURCES.md) for the existing brand-asset notices.
